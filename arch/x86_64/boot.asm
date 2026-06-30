@@ -1,4 +1,3 @@
-
 section .multiboot2
 bits 32
 
@@ -13,6 +12,20 @@ mb2_start:
     dd MB2_ARCH
     dd MB2_LEN
     dd MB2_CHECKSUM
+
+    ; ---- framebuffer tag ----
+    align 8
+fb_tag_start:
+    dw 5                              ; type = 5 (framebuffer)
+    dw 0                              ; flags = 0 (required)
+    dd fb_tag_end - fb_tag_start      ; size = کل تگ (20 بایت)
+    dd 1024                           ; width
+    dd 768                            ; height
+    dd 32                             ; depth
+fb_tag_end:
+
+    ; ---- end tag ----
+    align 8
     dw 0
     dw 0
     dd 8
@@ -279,11 +292,9 @@ section .text
 
 global syscall_asm_entry
 syscall_asm_entry:
-
-    ; Capture user state BEFORE any stack changes — fork() reads these
-    mov [user_ctx_rip],    rcx   ; user RIP  (SYSCALL saves RIP → RCX)
-    mov [user_ctx_rflags], r11   ; user RFLAGS (SYSCALL saves RFLAGS → R11)
-    mov [user_ctx_rsp],    rsp   ; user RSP (unchanged at SYSCALL entry)
+    mov [user_ctx_rip],    rcx
+    mov [user_ctx_rflags], r11
+    mov [user_ctx_rsp],    rsp
 
     push rcx
     push r11
@@ -298,36 +309,29 @@ syscall_asm_entry:
     pop  rcx
     o64 sysret
 
-; ── fork child trampoline ───────────────────────────────────────────
-; Called by arch_switch when the forked child is first scheduled.
-; arch_switch restores: r15, r14, r13, r12, rbp, rbx
-; We encode:  r12 = user RIP
-;             r13 = user RSP
-;             r14 = user RFLAGS
 global fork_child_stub
 fork_child_stub:
-    mov ax, 0x23        ; restore user data segments
+    mov ax, 0x23
     mov ds, ax
     mov es, ax
-    xor rax, rax        ; child returns 0 from fork()
-    mov rcx, r12        ; user RIP  → sysretq reads rcx
-    mov r11, r14        ; user RFLAGS → sysretq reads r11
-    mov rsp, r13        ; switch back to user stack (pre-syscall RSP)
+    xor rax, rax
+    mov rcx, r12
+    mov r11, r14
+    mov rsp, r13
     o64 sysret
 
 global _enter_usermode
 _enter_usermode:
     cli
-
     mov ax, 0x23
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
 
-    push qword 0x23        ; SS  (user data selector | RPL3)
-    push rsi               ; RSP (user stack)
-    push qword 0x202       ; RFLAGS (IF=1, reserved bit 1)
-    push qword 0x1B        ; CS  (user code selector | RPL3)
-    push rdi               ; RIP (entry point)
+    push qword 0x23
+    push rsi
+    push qword 0x202
+    push qword 0x1B
+    push rdi
     iretq

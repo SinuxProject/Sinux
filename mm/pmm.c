@@ -1,12 +1,12 @@
-
 #include "pmm.h"
 #include "../lib/string.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MB2_MAGIC_VAL  0x36D76289u
-#define TAG_END        0u
-#define TAG_MMAP       6u
+#define MB2_MAGIC_VAL    0x36D76289u
+#define TAG_END          0u
+#define TAG_MMAP         6u
+#define TAG_FRAMEBUFFER  8u
 
 typedef struct __attribute__((packed)) { uint32_t total, reserved; } mb2_hdr_t;
 typedef struct __attribute__((packed)) { uint32_t type, size;      } mb2_tag_t;
@@ -17,6 +17,16 @@ typedef struct __attribute__((packed)) {
     uint64_t base, len;
     uint32_t type, _res;
 } mb2_mmap_entry_t;
+typedef struct __attribute__((packed)) {
+    uint32_t type, size;
+    uint64_t fb_addr;
+    uint32_t fb_pitch;
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint8_t  fb_bpp;
+    uint8_t  fb_type;
+    uint16_t reserved;
+} mb2_fb_tag_t;
 
 #define BITMAP_MAX_PAGES (16 * 1024 * 1024)   
 
@@ -24,6 +34,9 @@ static uint8_t  *bitmap      = NULL;
 static size_t    total_pages = 0;
 static size_t    free_pages  = 0;
 static size_t    bitmap_size = 0;   
+
+static uint64_t   fb_addr = 0;
+static uint64_t   fb_len  = 0;
 
 static void   bm_set  (size_t idx) { bitmap[idx/8] |=  (uint8_t)(1u << (idx%8)); }
 static void   bm_clear(size_t idx) { bitmap[idx/8] &= (uint8_t)~(1u << (idx%8)); }
@@ -52,6 +65,12 @@ pmm_init(uint32_t magic, uint64_t info_addr)
                 if (e->type == 1 && top > max_addr) max_addr = top;
                 ep += mt->entry_size;
             }
+        } else if (tag->type == TAG_FRAMEBUFFER) {
+            mb2_fb_tag_t *fb = (mb2_fb_tag_t *)ptr;
+            fb_addr = fb->fb_addr;
+            fb_len  = (uint64_t)fb->fb_pitch * fb->fb_height;
+            uint64_t fb_top = fb_addr + fb_len;
+            if (fb_top > max_addr) max_addr = fb_top;
         }
         ptr += (tag->size + 7) & ~7u;
     }
@@ -115,6 +134,18 @@ pmm_init(uint32_t magic, uint64_t info_addr)
         if (idx < total_pages && !bm_test(idx)) {
             bm_set(idx);
             free_pages--;
+        }
+    }
+
+    if (fb_addr != 0 && fb_len != 0) {
+        uint64_t start = fb_addr & ~(uint64_t)(PAGE_SIZE - 1);
+        uint64_t stop  = (fb_addr + fb_len + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        for (uint64_t a = start; a < stop; a += PAGE_SIZE) {
+            size_t idx = (size_t)(a / PAGE_SIZE);
+            if (idx < total_pages && !bm_test(idx)) {
+                bm_set(idx);
+                free_pages--;
+            }
         }
     }
 }
