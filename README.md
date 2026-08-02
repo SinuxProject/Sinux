@@ -1,7 +1,11 @@
-# Sinux
+# Sinux 1.0.0 MVP
 
 A minimal 64-bit Unix-like operating system kernel written from scratch in C and x86_64 Assembly.
 Boots via GRUB Multiboot2, supports UEFI and BIOS, and runs on real hardware or QEMU.
+
+**Version:** 1.0.0 MVP (Minimum Viable Product)  
+**Status:** Ready for development and testing  
+**License:** Apache 2.0
 
 ---
 
@@ -10,18 +14,20 @@ Boots via GRUB Multiboot2, supports UEFI and BIOS, and runs on real hardware or 
 Sinux is a hobby operating system built to understand how real operating systems work at the lowest level.
 It is not Linux. It does not run Linux programs. It is an independent kernel with its own:
 
-- Physical and virtual memory manager
-- VFS (Virtual File System) with ramfs and ext2 support
-- ATA PIO disk driver for persistent storage
-- PS/2 keyboard and VGA text mode drivers
-- Serial (COM1) debug output
-- IDT, GDT, TSS, PIC, PIT
-- Syscall interface (Linux x86_64 ABI compatible)
-- Process scheduler (round-robin)
-- ELF64 loader for userspace programs
-- Ring 3 (user mode) execution
-- Pipe and signal primitives
-- Built-in shell with filesystem commands
+- ✅ Physical and virtual memory manager
+- ✅ VFS (Virtual File System) with ramfs and ext2 support
+- ✅ ATA PIO disk driver for persistent storage
+- ✅ PS/2 keyboard and VGA text mode drivers
+- ✅ Serial (COM1) debug output
+- ✅ IDT, GDT, TSS, PIC, PIT
+- ✅ Syscall interface (Linux x86_64 ABI compatible)
+- ✅ Process scheduler (round-robin)
+- ✅ ELF64 loader for userspace programs
+- ✅ Ring 3 (user mode) execution
+- ✅ Pipe and signal primitives
+- ✅ Built-in shell with filesystem commands
+- ✅ Persistent storage (ext2 on ATA drive)
+- ✅ Procfs for kernel information
 
 ---
 
@@ -327,22 +333,92 @@ make run-serial
 
 ---
 
-## Known Limitations
+## Known Limitations (Roadmap for 2.0.0)
 
-- Single core only (no SMP)
-- No networking
-- No USB driver (PS/2 keyboard only)
-- No ACPI (halt stops CPU, does not power off)
-- ext2 is basic (no journaling, no fsck)
-- No dynamic linking
-- No virtual memory swapping
+The following features are planned for future versions:
+
+- ❌ Single core only (no SMP) - *Planned: Multi-core support*
+- ❌ No networking - *Planned: Ethernet driver (e1000, virtio-net)*
+- ❌ No USB driver (PS/2 keyboard only) - *Planned: UHCI/EHCI support*
+- ❌ No ACPI (halt stops CPU, does not power off) - *Planned: ACPI AML interpreter*
+- ❌ ext2 is basic (no journaling, no fsck) - *Planned: ext3/ext4 support*
+- ❌ No dynamic linking - *Planned: ELF dynamic loader*
+- ❌ No virtual memory swapping - *Planned: Swap space support*
+- ❌ No graphical display (VGA text mode only) - *Planned: Framebuffer, GUI*
+- ❌ No sound support - *Planned: AC97, HDA drivers*
+- ❌ Limited shell features - *Planned: Scripting, pipes, redirections*
+
+---
+
+## Version History
+
+### 1.0.0 MVP (Current)
+- ✅ Complete memory management (PMM + VMM)
+- ✅ Full VFS with ramfs, ext2, and procfs
+- ✅ Process scheduler with round-robin
+- ✅ Complete syscall interface (Linux ABI compatible)
+- ✅ Userspace libc and program loader
+- ✅ Persistent storage via ATA PIO
+- ✅ Interactive shell with 20+ commands
+- ✅ PS/2 keyboard and VGA text drivers
+- ✅ Serial debugging output
+- ✅ Multiboot2 (BIOS + UEFI) support
+
+### 0.5.0 (Previous)
+- Initial kernel structure
+- Basic memory management
+- Simple VFS implementation
+- Minimal process management
+- Basic shell commands
+
+---
+
+## Contributing
+
+Contributions are welcome! Please follow these steps:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Make your changes
+4. Test thoroughly in QEMU and/or real hardware
+5. Commit your changes (`git commit -m 'Add amazing feature'`)
+6. Push to the branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+### Development Guidelines
+
+- Follow the existing code style (K&R with tabs)
+- Add comments for complex logic
+- Test on both BIOS and UEFI modes
+- Ensure no memory leaks in kernel code
+- Keep userspace programs minimal and focused
+
+---
+
+## Support & Community
+
+- **Issues:** Report bugs and feature requests on GitHub Issues
+- **Discussions:** Join discussions about development and ideas
+- **Wiki:** Check the wiki for detailed documentation (coming soon)
+
+---
+
+## Acknowledgments
+
+This project was inspired by:
+- OSDev Wiki (wiki.osdev.org)
+- Linux Kernel source code
+- xv6 from MIT
+- Various hobby OS projects
+
+Special thanks to the OSDev community for their invaluable resources and support.
 
 ---
 
 ## License
 
-APACHE 2.0
+Apache 2.0
 
 ---
 
----
+**Sinux 1.0.0 MVP - A stepping stone towards understanding operating systems at the deepest level.**

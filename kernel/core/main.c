@@ -229,7 +229,7 @@ shell(void)
             uint64_t ms=pit_uptime_ms();
             printk("  up %u.%03u seconds\n",ms/1000,ms%1000);
         }
-        else if(!kstrcmp(cmd,"uname"))  printk("Sinux 0.04\n");
+        else if(!kstrcmp(cmd,"uname"))  printk("Sinux 1.0.0 MVP\n");
         else if(!kstrcmp(cmd,"clear"))  { tty_clear(); }
         else if(!kstrcmp(cmd,"halt"))   {
             tty_setcolor_err(); tty_puts("Halting...\n");

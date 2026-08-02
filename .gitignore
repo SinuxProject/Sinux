@@ -1,1 +1,37 @@
-sinux.img
+```
+# Compiled and build artifacts
+*.img
+*.elf
+*.a
+*.o
+*.obj
+*.out
+build/
+dist/
+
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.env.*
+```
