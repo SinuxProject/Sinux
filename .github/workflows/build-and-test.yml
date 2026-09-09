@@ -1,0 +1,47 @@
+name: build-and-test
+
+# Phase 0 CI: build the kernel + ISO, then prove it boots.
+# Green on every push to main and every PR — no exceptions.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build kernel, ISO and QEMU smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            nasm grub-pc-bin xorriso mtools qemu-system-x86 \
+            gcc binutils make e2fsprogs
+
+      - name: Build kernel and ISO
+        run: make iso
+
+      - name: QEMU smoke test (headless, serial check)
+        run: ./scripts/smoke-test.sh
+
+      - name: Upload ISO
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sinux-iso
+          path: build/iso/sinux.iso
+
+      - name: Upload serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-log
+          path: serial.log
