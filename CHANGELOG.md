@@ -6,6 +6,12 @@ versioning follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-09
+
+Phase 0 (engineering infrastructure) is complete: documented, CI-gated,
+self-tested baseline. No new kernel features. Details in `RELEASE_NOTES.md`
+and in the `0.6.0-alpha.1`, `0.6.0-alpha.2`, `0.6.0-beta.1` entries below.
+
 ## [0.6.0-beta.1] - 2026-09-09
 
 ### Added
@@ -61,7 +67,8 @@ Baseline inherited from `SinuxProject/Sinux`.
   loader, ring-3 execution, pipes/signals primitives.
 - In-kernel shell, minimal static libc, example `hello` program.
 
-[Unreleased]: https://github.com/hesam-oxe/Sinux/compare/v0.6.0-beta.1...HEAD
+[Unreleased]: https://github.com/hesam-oxe/Sinux/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/hesam-oxe/Sinux/releases/tag/v0.6.0
 [0.6.0-beta.1]: https://github.com/hesam-oxe/Sinux/releases/tag/v0.6.0-beta.1
 [0.6.0-alpha.2]: https://github.com/hesam-oxe/Sinux/releases/tag/v0.6.0-alpha.2
 [0.6.0-alpha.1]: https://github.com/hesam-oxe/Sinux/releases/tag/v0.6.0-alpha.1
