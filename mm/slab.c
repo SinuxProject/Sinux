@@ -53,7 +53,8 @@ slab_create(size_t obj_size)
     
     size_t usable = SLAB_SIZE - sizeof(slab_header_t);
     slab->total_objs = usable / obj_size;
-    if (slab->total_objs > 504) slab->total_objs = 504;
+    if (slab->total_objs > SLAB_MAX_OBJS)
+        slab->total_objs = SLAB_MAX_OBJS;
     
     slab->free_objs = slab->total_objs;
     slab->next = NULL;

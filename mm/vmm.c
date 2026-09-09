@@ -160,14 +160,31 @@ kmalloc(size_t size)
         
         size = (size + 15) & ~(size_t)15;
         if (heap_left < size) {
+            /* Refill with `pages` PHYSICALLY CONTIGUOUS pages: the bump
+             * heap is a flat range, so claiming `pages * PAGE_SIZE` bytes
+             * from a single page overruns into unowned memory. At boot
+             * the PMM is pristine (no frees yet), so consecutive
+             * pmm_alloc() calls are contiguous; if they ever are not,
+             * release what we took and fail instead of corrupting. */
             size_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-            heap_cur  = pmm_alloc();
-            heap_left = pages * PAGE_SIZE;
-            if (!heap_cur) return NULL;
-            for (size_t i = 1; i < pages; i++) {
+            uint8_t *first = pmm_alloc();
+            if (!first) return NULL;
+            size_t got = 1;
+            for (; got < pages; got++) {
                 void *extra = pmm_alloc();
-                if (!extra) { heap_cur = NULL; heap_left = 0; return NULL; }
+                if (!extra ||
+                    (uint8_t *)extra != first + got * PAGE_SIZE) {
+                    if (extra) pmm_free(extra);
+                    break;
+                }
             }
+            if (got < pages) {
+                for (size_t i = 0; i < got; i++)
+                    pmm_free(first + i * PAGE_SIZE);
+                return NULL;
+            }
+            heap_cur  = first;
+            heap_left = pages * PAGE_SIZE;
         }
         void *ptr = heap_cur;
         heap_cur  += size;

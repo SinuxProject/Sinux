@@ -5,12 +5,18 @@
 
 #define SLAB_MAGIC 0x5AB0BEEF
 
+/* Max objects per slab: 256 (covers the smallest cache: 16-byte objs
+ * in a 4 KiB page). The header must stay small — an oversized bitmap
+ * ate the whole page, yielding total_objs=0 and pushing every object
+ * past the page end into the next physical page. */
+#define SLAB_MAX_OBJS 256
+
 typedef struct slab_header {
     uint32_t magic;
     uint32_t obj_size;
     uint32_t total_objs;
     uint32_t free_objs;
-    uint64_t free_bitmap[(4096-32)/8];
+    uint64_t free_bitmap[SLAB_MAX_OBJS / 64];
     struct slab_header *next;
 } slab_header_t;
 

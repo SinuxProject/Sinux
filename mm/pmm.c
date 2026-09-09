@@ -18,7 +18,12 @@ typedef struct __attribute__((packed)) {
     uint32_t type, _res;
 } mb2_mmap_entry_t;
 
-#define BITMAP_MAX_PAGES (16 * 1024 * 1024)   
+#define BITMAP_MAX_PAGES (16 * 1024 * 1024)
+
+/* Physical end of the kernel image (linker-provided; the image is
+ * identity-mapped at boot). Everything below it is reserved and must
+ * never be handed out as free pages or heap. */
+extern uint64_t _kernel_end[];
 
 static uint8_t  *bitmap      = NULL;
 static size_t    total_pages = 0;
@@ -60,6 +65,9 @@ pmm_init(uint32_t magic, uint64_t info_addr)
     if (total_pages > BITMAP_MAX_PAGES) total_pages = BITMAP_MAX_PAGES;
     bitmap_size = (total_pages + 7) / 8;
 
+    uint64_t kernel_end =
+        ((uint64_t)_kernel_end + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+
     ptr = (uint8_t *)hdr + 8;
     bool placed = false;
     while (ptr + sizeof(mb2_tag_t) <= end && !placed) {
@@ -71,10 +79,17 @@ pmm_init(uint32_t magic, uint64_t info_addr)
             uint8_t *ee = ptr + tag->size;
             while (ep + mt->entry_size <= ee && !placed) {
                 mb2_mmap_entry_t *e = (mb2_mmap_entry_t *)ep;
-                if (e->type == 1 && e->base >= 0x200000 &&
-                    e->len >= bitmap_size) {
-                    bitmap = (uint8_t *)(uintptr_t)e->base;
-                    placed = true;
+                if (e->type == 1) {
+                    /* place the bitmap above the kernel image,
+                     * inside a region with enough room */
+                    uint64_t place =
+                        e->base < kernel_end ? kernel_end : e->base;
+                    place = (place + PAGE_SIZE - 1) &
+                            ~(uint64_t)(PAGE_SIZE - 1);
+                    if (place + bitmap_size <= e->base + e->len) {
+                        bitmap = (uint8_t *)(uintptr_t)place;
+                        placed = true;
+                    }
                 }
                 ep += mt->entry_size;
             }
@@ -110,7 +125,16 @@ pmm_init(uint32_t magic, uint64_t info_addr)
         ptr += (tag->size + 7) & ~7u;
     }
 
-    for (uint64_t a = 0; a < 0x200000 + bitmap_size + PAGE_SIZE; a += PAGE_SIZE) {
+    /* reserve [0, max(kernel_end, bitmap_end)): neither the kernel
+     * image nor the bitmap itself may ever be handed out as free pages */
+    uint64_t reserve_end = kernel_end;
+    uint64_t bitmap_end =
+        ((uint64_t)bitmap + bitmap_size + PAGE_SIZE - 1) &
+        ~(uint64_t)(PAGE_SIZE - 1);
+    if (bitmap_end > reserve_end)
+        reserve_end = bitmap_end;
+
+    for (uint64_t a = 0; a < reserve_end; a += PAGE_SIZE) {
         size_t idx = (size_t)(a / PAGE_SIZE);
         if (idx < total_pages && !bm_test(idx)) {
             bm_set(idx);
