@@ -133,21 +133,30 @@ int64_t vfs_readdir(file_t *f, dentry_t *d) {
 }
 
 static void
-split_path(const char *path, char *dir, char **name)
+split_path(const char *path, char *dir, char *name)
 {
     kstrncpy(dir, path, 255);
     char *last = dir;
     for (char *p = dir; *p; p++) if (*p == '/') last = p;
-    if (last == dir) { *name = dir + 1; kstrcpy(dir, "/"); }
-    else             { *name = last + 1; *last = '\0'; }
+    if (last == dir) {
+        /* Top-level path ("/foo"): the name must live in its own
+         * buffer — aliasing dir+1 breaks because kstrcpy(dir, "/")
+         * overwrites dir[1] with NUL (all top-level creates
+         * previously failed with -EINVAL). */
+        kstrcpy(name, dir + 1);
+        kstrcpy(dir, "/");
+    } else {
+        kstrcpy(name, last + 1);
+        *last = '\0';
+    }
 }
 
 int
 vfs_create(const char *path, file_type_t type)
 {
-    char dir[256]; char *name;
-    split_path(path, dir, &name);
-    if (!name || !name[0]) return -EINVAL;
+    char dir[256]; char name[256];
+    split_path(path, dir, name);
+    if (!name[0]) return -EINVAL;
     inode_t *parent = vfs_lookup(dir);
     if (!parent || parent->type != FT_DIR) return -ENOENT;
     if (!parent->ops || !parent->ops->create) return -EACCES;
@@ -157,9 +166,9 @@ vfs_create(const char *path, file_type_t type)
 int
 vfs_unlink(const char *path)
 {
-    char dir[256]; char *name;
-    split_path(path, dir, &name);
-    if (!name || !name[0]) return -EINVAL;
+    char dir[256]; char name[256];
+    split_path(path, dir, name);
+    if (!name[0]) return -EINVAL;
     inode_t *parent = vfs_lookup(dir);
     if (!parent) return -ENOENT;
     if (!parent->ops || !parent->ops->unlink) return -EACCES;
