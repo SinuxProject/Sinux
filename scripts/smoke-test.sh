@@ -42,6 +42,7 @@ check_absent() {
 # state: no init ELF exists yet, so the kernel must reach its shell.
 check_present "Made By SUN"
 check_present "RAM:"
+check_present "ktest: ALL TESTS PASSED"
 check_present "falling back to kernel shell"
 check_absent  "panic"
 

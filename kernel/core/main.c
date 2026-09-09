@@ -6,6 +6,7 @@
 #include "../fs/procfs.h"
 #include "../fs/ext2.h"
 #include "../syscall/syscall.h"
+#include "../test/ktest.h"
 #include "../proc/init.h"
 #include "../../arch/x86_64/gdt.h"
 #include "../../arch/x86_64/idt.h"
@@ -333,6 +334,10 @@ kernel_main(uint32_t mb2_magic, uint64_t mb2_info)
     vfs_create("/usr",  FT_DIR);
 
     kstrcpy(cwd, "/root");
+
+    /* Phase 0 self-tests (PMM + VFS). Results go to serial;
+     * boot continues regardless — the test harness judges. */
+    ktest_run_all();
 
     __asm__ volatile("sti");
 

@@ -30,7 +30,7 @@ jobs:
         run: make iso
 
       - name: QEMU smoke test (headless, serial check)
-        run: ./scripts/smoke-test.sh
+        run: make test
 
       - name: Upload ISO
         if: success()

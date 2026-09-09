@@ -36,8 +36,9 @@ include kernel/ipc/module.mk
 include kernel/proc/module.mk
 include kernel/fs/module.mk
 include kernel/syscall/module.mk
+include kernel/test/module.mk
 
-.PHONY: all iso run run-uefi run-bios run-serial clean deps userspace disk
+.PHONY: all iso run run-uefi run-bios run-serial test clean deps userspace disk
 
 all: $(TARGET) userspace
 
@@ -54,6 +55,9 @@ $(BUILD):
 
 include scripts/iso.mk
 include scripts/qemu.mk
+
+test: iso
+	SMOKE_TIMEOUT=120 ./scripts/smoke-test.sh
 
 clean:
 	rm -rf $(BUILD)
