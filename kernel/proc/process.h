@@ -36,6 +36,13 @@ typedef struct process {
 
     uint64_t     ticks;
     int          timeslice;
+    
+    /* SMP scheduler fields */
+    int          priority;       /* 0 (highest) to 139 (lowest) */
+    int          nice;           /* -20 to +19 */
+    uint64_t     sleep_avg;      /* For interactive task detection */
+    uint64_t     affinity;       /* CPU affinity mask */
+    int          cpu;            /* Last CPU this ran on */
 
     fd_entry_t   fds[MAX_FDS];
     char         cwd[256];
