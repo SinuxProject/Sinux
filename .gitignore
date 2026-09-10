@@ -1,1 +1,14 @@
-sinux.img
+```
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
+# Dependencies
+node_modules/
+# Logs and temp files
+*.log
+*.tmp
+# Editors
+.vscode/
+.idea/
+```

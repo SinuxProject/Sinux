@@ -17,9 +17,14 @@ typedef struct __attribute__((packed)) {
 static idt_gate_t idt[256];
 static idtr_t     idtr;
 
+/* External ISR declarations */
 extern void isr_de(void), isr_ud(void), isr_df(void);
 extern void isr_gp(void), isr_pf(void);
 extern void isr_kbd(void), isr_pit(void);
+
+/* IPI handlers for SMP */
+extern void isr_resched(void);
+extern void isr_tlb_flush(void);
 
 void
 idt_set_gate(int n, uint64_t h, uint8_t attr)
@@ -44,6 +49,10 @@ idt_init(void)
     idt_set_gate(14, (uint64_t)isr_pf,  IDT_INT_GATE);
     idt_set_gate(32, (uint64_t)isr_pit, IDT_INT_GATE);
     idt_set_gate(33, (uint64_t)isr_kbd, IDT_INT_GATE);
+    
+    /* Register IPI handlers for SMP */
+    idt_set_gate(0xFA, (uint64_t)isr_resched, IDT_INT_GATE);   /* Reschedule IPI */
+    idt_set_gate(0xFB, (uint64_t)isr_tlb_flush, IDT_INT_GATE); /* TLB flush IPI */
 
     idtr.limit = (uint16_t)(sizeof(idt) - 1);
     idtr.base  = (uint64_t)idt;

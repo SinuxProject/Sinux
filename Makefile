@@ -37,6 +37,7 @@ include kernel/proc/module.mk
 include kernel/fs/module.mk
 include kernel/syscall/module.mk
 include kernel/test/module.mk
+include kernel/scheduler/module.mk
 
 .PHONY: all iso run run-uefi run-bios run-serial test clean deps userspace disk
 
