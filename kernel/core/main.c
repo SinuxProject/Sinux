@@ -1,6 +1,7 @@
 #include "panic.h"
 #include "../proc/process.h"
 #include "../proc/scheduler.h"
+#include "../scheduler/sched.h"
 #include "../fs/vfs.h"
 #include "../fs/ramfs.h"
 #include "../fs/procfs.h"
@@ -12,6 +13,8 @@
 #include "../../arch/x86_64/idt.h"
 #include "../../arch/x86_64/pic.h"
 #include "../../arch/x86_64/pit.h"
+#include "../../arch/x86_64/smp/cpu.h"
+#include "../../arch/x86_64/smp/lock.h"
 #include "../../drivers/tty.h"
 #include "../../drivers/ata.h"
 #include "../../drivers/fb.h"
@@ -311,7 +314,14 @@ kernel_main(uint32_t mb2_magic, uint64_t mb2_info)
     procfs_mount("/proc");
     tty_dev_init();
     proc_init();
-    sched_init();
+    
+    /* Initialize SMP subsystem (LAPIC/IOAPIC, bring up APs) */
+    smp_init();
+    smp_bringup_aps();
+    
+    /* Initialize preemptive scheduler with per-CPU runqueues */
+    sched_preempt_init();
+    
     syscall_init();
 
     ata_init();

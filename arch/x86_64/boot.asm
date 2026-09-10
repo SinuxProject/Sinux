@@ -271,6 +271,25 @@ isr_pit:
     POP_ALL
     iretq
 
+; ── IPI handlers for SMP ────────────────────────────────────────────
+global isr_resched
+isr_resched:
+    PUSH_ALL
+    mov rdi, 0xFEE000B0
+    mov dword [rdi], 0
+    POP_ALL
+    iretq
+
+global isr_tlb_flush
+isr_tlb_flush:
+    PUSH_ALL
+    mov rax, cr3
+    mov cr3, rax
+    mov rdi, 0xFEE000B0
+    mov dword [rdi], 0
+    POP_ALL
+    iretq
+
 ; ── User context save area (for fork) ──────────────────────────────
 section .bss
 global user_ctx_rip, user_ctx_rflags, user_ctx_rsp
