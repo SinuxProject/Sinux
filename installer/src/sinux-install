@@ -1,0 +1,689 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Sinux text-mode installer 1.1.0
+#
+# Runs as a CHILD of /init (never as PID 1).  Even if this script exits,
+# the /init supervisor keeps the machine alive and drops to a shell.
+#
+# Kernel command line options (set by the ISO's GRUB menu):
+#   sinux.lang=en|fa            installer language
+#   sinux.mode=install|auto|dryrun|rescue
+#   sinux.device=/dev/vda       non-interactive target (auto mode)
+#   sinux.fs=ext2|ext4          root filesystem (auto mode)
+#   sinux.hostname=NAME         hostname (auto mode)
+#   sinux.yes=1                 skip confirmations (auto mode)
+#   sinux.reboot=0|1            power off / reboot when finished (auto mode)
+#   sinux.debug=1               verbose modprobe + extra logging
+#   sinux.nodialog=1            force the plain text UI
+#   sinux.term=TERM             override TERM (e.g. dumb, vt100)
+#   sinux.fa_console=auto|shaped|raw   Farsi shaping override
+# ---------------------------------------------------------------------------
+set -uo pipefail
+export LC_ALL=C
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM="${SINUX_TERM:-${TERM:-linux}}"
+
+VERSION=1.1.0
+PAYLOAD=/sinux
+TARGET=/mnt/target
+LOG=/var/log/sinux-install.log
+DIALOG_BIN=/usr/bin/dialog
+mkdir -p /var/log "$TARGET" "$PAYLOAD" 2>/dev/null || true
+: > "$LOG"
+
+LANG_CODE="${SINUX_LANG:-en}"
+MODE="${SINUX_MODE:-install}"
+AUTO_DEVICE="${SINUX_DEVICE:-}"
+FS_CHOICE="${SINUX_FS:-ext2}"
+AUTO_YES="${SINUX_YES:-0}"
+REBOOT_AFTER="${SINUX_REBOOT:-1}"
+HOSTNAME="${SINUX_HOSTNAME:-sinux}"
+SERIAL="${SINUX_SERIAL:-0}"
+NODIALOG="${SINUX_NODIALOG:-0}"
+FA_CONSOLE="${SINUX_FA_CONSOLE:-auto}"
+DEBUG="${SINUX_DEBUG:-0}"
+
+declare -A MSG
+DRY_RUN=0
+DISK=""; P1=""; P2=""; P3=""
+ROOT_UUID=""; FS=""; USE_DIALOG=0
+
+# /init exports the console the user actually sees (/dev/tty0 on a normal
+# PC, /dev/console on a serial boot).  Never guess /dev/console here: on
+# real hardware without a COM port that silently swallows the whole UI.
+CONSOLE="${SINUX_CONSOLE:-/dev/console}"
+[ -e "$CONSOLE" ] || CONSOLE=/dev/tty0
+[ -e "$CONSOLE" ] || CONSOLE=/dev/stdout
+
+# --------------------------------------------------------------------------
+# helpers that must exist before anything else
+# --------------------------------------------------------------------------
+log()  { printf '%s\n' "$*" | tee -a "$LOG"; }
+step() { log ""; log ">>> $(msg "$1")"; }
+
+idle_forever() {
+    # Console input ran out (EOF on a serial/pipe).  Do NOT return: PID 1
+    # (our child) must stay alive, otherwise the kernel panics.
+    printf '\n[installer] console input exhausted - idling to keep init alive.\n' >&2
+    log "console input exhausted; idling"
+    while : ; do sleep 30; done
+}
+
+# --------------------------------------------------------------------------
+# i18n
+# --------------------------------------------------------------------------
+load_catalog() {
+    MSG=()
+    local line k v
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac
+        k="${line%%=*}"; v="${line#*=}"
+        MSG["$k"]="$v"
+    done < "$1"
+}
+
+use_shaped_fa() {
+    [ "$LANG_CODE" = fa ] || return 1
+    case "$FA_CONSOLE" in
+        shaped) return 0 ;;
+        raw)    return 1 ;;
+    esac
+    [ "$SERIAL" = 0 ] || return 1
+    [ "${TERM:-}" = linux ] || return 1
+    return 0
+}
+
+set_language() {
+    LANG_CODE="$1"
+    if [ "$LANG_CODE" = fa ]; then
+        if use_shaped_fa; then
+            load_catalog "$PAYLOAD/i18n/fa-console.msg"
+            log "i18n: fa (pre-shaped VGA catalog)"
+        else
+            load_catalog "$PAYLOAD/i18n/fa.msg"
+            log "i18n: fa (raw UTF-8 catalog)"
+        fi
+    else
+        load_catalog "$PAYLOAD/i18n/en.msg"
+        log "i18n: en"
+    fi
+}
+
+msg() {
+    local k="$1" v
+    v="${MSG[$k]:-$k}"
+    printf '%b' "$v"
+}
+
+set_language "$LANG_CODE"
+
+if [ "$NODIALOG" = 1 ] || [ "$MODE" = auto ] || [ "$MODE" = dryrun ] \
+   || [ "${TERM:-dumb}" = dumb ] || [ ! -x "$DIALOG_BIN" ] || [ ! -t 0 ]; then
+    USE_DIALOG=0
+else
+    USE_DIALOG=1
+fi
+log "ui: $([ "$USE_DIALOG" = 1 ] && echo dialog || echo plain-text)  term=$TERM serial=$SERIAL"
+log "installer $VERSION  mode=$MODE  debug=$DEBUG  fa_console=$FA_CONSOLE"
+
+dlg() { "$DIALOG_BIN" --ascii-lines "$@"; }
+
+fallback_ui() {
+    [ "$USE_DIALOG" = 1 ] || return 0
+    USE_DIALOG=0
+    log "dialog failed -> switching to plain text UI"
+    printf '\n[ui] dialog unavailable, using plain text.\n' >"$CONSOLE" 2>/dev/null || true
+}
+
+# dialog UI goes to $CONSOLE; the selection is captured from stderr.
+# Exit codes: 0 = OK/Yes, 1 = Cancel/No (valid), >=2 = real failure.
+ui_msg() {
+    local title="$1" text="$2"
+    if [ "$USE_DIALOG" = 1 ]; then
+        if dlg --title "$title" --msgbox "$text" 22 76 >"$CONSOLE" 2>/dev/null; then
+            return 0
+        fi
+        fallback_ui
+    fi
+    printf '\n===== %s =====\n%s\n' "$title" "$text"
+}
+
+ui_yesno() {
+    local title="$1" text="$2" ans rc
+    if [ "$USE_DIALOG" = 1 ]; then
+        dlg --yes-label "$(msg YES_LABEL)" --no-label "$(msg NO_LABEL)" \
+            --title "$title" --yesno "$text" 16 76 >"$CONSOLE" 2>/dev/null
+        rc=$?
+        case "$rc" in
+            0) return 0 ;;
+            1) return 1 ;;
+            *) fallback_ui ;;
+        esac
+    fi
+    # Prompts must go to stderr: callers capture stdout with $(...), so a
+    # plain-text menu written to stdout would never reach the console.
+    printf '\n===== %s =====\n%s\n[%s/%s] ' "$title" "$text" \
+        "$(msg YES_LABEL)" "$(msg NO_LABEL)" >&2
+    read -r ans || idle_forever
+    case "$ans" in y|Y|yes|YES|بله|آره|1) return 0 ;; *) return 1 ;; esac
+}
+
+ui_menu() {
+    local title="$1" text="$2"; shift 2
+    if [ "$USE_DIALOG" = 1 ]; then
+        local tmp rc; tmp="$(mktemp)" || { fallback_ui; }
+        if [ "$USE_DIALOG" = 1 ]; then
+            dlg --title "$title" --menu "$text" 20 76 10 "$@" >"$CONSOLE" 2>"$tmp"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+                cat "$tmp"; rm -f "$tmp"; return 0
+            fi
+            rm -f "$tmp"
+            [ "$rc" -eq 1 ] && return 1
+            fallback_ui
+        fi
+    fi
+    local tags=() labels=() i n
+    while [ $# -gt 0 ]; do tags+=("$1"); labels+=("$2"); shift 2; done
+    printf '\n===== %s =====\n%s\n' "$title" "$text" >&2
+    for i in "${!tags[@]}"; do printf '  %2d) %s\n' "$((i+1))" "${labels[$i]}" >&2; done
+    printf '> ' >&2
+    read -r n || idle_forever
+    case "$n" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$n" -ge 1 ] && [ "$n" -le "${#tags[@]}" ]; then
+        printf '%s' "${tags[$((n-1))]}"
+        return 0
+    fi
+    return 1
+}
+
+ui_input() {
+    local title="$1" text="$2" def="$3" ans rc
+    if [ "$USE_DIALOG" = 1 ]; then
+        local tmp; tmp="$(mktemp)" || { fallback_ui; }
+        if [ "$USE_DIALOG" = 1 ]; then
+            dlg --title "$title" --inputbox "$text" 10 70 "$def" >"$CONSOLE" 2>"$tmp"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+                cat "$tmp"; rm -f "$tmp"; return 0
+            fi
+            rm -f "$tmp"
+            [ "$rc" -eq 1 ] && return 1
+            fallback_ui
+        fi
+    fi
+    printf '%s [%s]: ' "$text" "$def" >&2
+    read -r ans || idle_forever
+    printf '%s' "${ans:-$def}"
+}
+
+die() {
+    log "ERROR: $1"
+    ui_msg "$(msg ERR_TITLE)" "$1"
+    printf '\n[installer] fatal error -> rescue shell (init stays alive).\n' >&2
+    exit 1
+}
+
+# --------------------------------------------------------------------------
+# generic helpers
+# --------------------------------------------------------------------------
+partn() {
+    local d="$1" n="$2" base="${1##*/}"
+    case "$base" in
+        *[0-9]) printf '%sp%s' "$d" "$n" ;;
+        *)      printf '%s%s'  "$d" "$n" ;;
+    esac
+}
+
+firmware() {
+    if [ -d /sys/firmware/efi ]; then msg FIRMWARE_UEFI; else msg FIRMWARE_BIOS; fi
+}
+
+is_install_media() {
+    local dev="$1" label p
+    label="$(blkid -s LABEL -o value "$dev" 2>/dev/null || true)"
+    [ "$label" = SINUX_INST ] && return 0
+    for n in 1 2 3 4 5 6 7 8; do
+        p="$(partn "$dev" "$n")"
+        [ -b "$p" ] || continue
+        label="$(blkid -s LABEL -o value "$p" 2>/dev/null || true)"
+        [ "$label" = SINUX_INST ] && return 0
+    done
+    return 1
+}
+
+media_parent() {
+    local dev parent=""
+    dev="$(blkid -L SINUX_INST 2>/dev/null || true)"
+    [ -z "$dev" ] && { printf ''; return; }
+    parent="$(lsblk -no PKNAME "$dev" 2>/dev/null | head -n 1 | tr -d ' ' || true)"
+    [ -z "$parent" ] && parent="$(printf '%s' "$dev" | sed -E 's/p?[0-9]+$//')"
+    printf '%s' "$parent"
+}
+
+list_disks() {
+    DISKS=(); DISK_LABELS=()
+    local name size type mp
+    mp="$(media_parent)"
+    local tbl; tbl="$(mktemp /tmp/sinux-disks.XXXXXX)" || tbl=/tmp/sinux-disks.list
+    lsblk -d -n -o NAME,SIZE,TYPE > "$tbl" 2>/dev/null || true
+    while read -r name size type; do
+        [ "$type" = disk ] || continue
+        case "$name" in sr*|loop*|ram*|fd*|dm-*|md*|zram*) continue ;; esac
+        [ -b "/dev/$name" ] || continue
+        [ -n "$mp" ] && [ "$name" = "$mp" ] && continue
+        is_install_media "/dev/$name" && continue
+        DISKS+=("/dev/$name")
+        DISK_LABELS+=("$name   $size")
+    done < "$tbl"
+    rm -f "$tbl"
+}
+
+run() {
+    log "+ $*"
+    [ "$DRY_RUN" = 1 ] && return 0
+    "$@" 2>&1 | tee -a "$LOG"
+    local rc=${PIPESTATUS[0]}
+    [ "$rc" -eq 0 ] || die "Command failed: $* (rc=$rc, see $LOG)"
+}
+
+do_reboot() {
+    sync
+    log "rebooting"
+    busybox reboot -f 2>/dev/null || reboot -f 2>/dev/null \
+        || /sbin/reboot -f 2>/dev/null \
+        || printf 'b' > /proc/sysrq-trigger 2>/dev/null || true
+    sleep 2
+    log "reboot did not happen - returning to menu"
+}
+
+do_poweroff() {
+    sync
+    log "powering off"
+    busybox poweroff -f 2>/dev/null || poweroff -f 2>/dev/null || /sbin/poweroff -f 2>/dev/null || true
+    sleep 2
+    log "power off did not happen - returning to menu"
+}
+
+# --------------------------------------------------------------------------
+# installation
+# --------------------------------------------------------------------------
+partition_disk() {
+    step STEP_PART
+    # Sector-size independent: sfdisk calculates first-lba and the sector
+    # count from the actual logical block size (works on 512e and 4Kn).
+    local script
+    script=$(cat <<'EOF'
+label: gpt
+
+1 : size=+1M,   type=21686148-6449-6E6F-744E-656564454649, name="Sinux BIOS", bootable
+2 : size=+128M, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="Sinux EFI"
+3 :              type=0FC63DAF-8483-4772-8E79-3D69D8479DE4, name="Sinux Root"
+EOF
+)
+    log "+ sfdisk --wipe always --force $DISK"
+    if [ "$DRY_RUN" = 0 ]; then
+        printf '%s\n' "$script" | sfdisk --wipe always --force "$DISK" >>"$LOG" 2>&1 \
+            || die "sfdisk failed (see $LOG)"
+        partprobe "$DISK" >>"$LOG" 2>&1 || true
+        blockdev --rereadpt "$DISK" >>"$LOG" 2>&1 || true
+        partx -a "$DISK" >>"$LOG" 2>&1 || true
+        sleep 1
+        for p in "$P1" "$P2" "$P3"; do
+            [ -b "$p" ] || die "Expected partition $p did not appear"
+        done
+        # Print the resulting table so the sector size (512 vs 4096) and the
+        # exact layout are visible in the console log and in the saved
+        # /etc/sinux/install.log on the target.
+        log "resulting partition table:"
+        local tbl; tbl="$(mktemp /tmp/sinux-part.XXXXXX)" || tbl=/tmp/sinux-part.list
+        sfdisk -d "$DISK" > "$tbl" 2>/dev/null || true
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "  $line"
+        done < "$tbl"
+        rm -f "$tbl"
+    fi
+}
+
+format_partitions() {
+    step STEP_FORMAT
+    ROOT_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    [ -n "$ROOT_UUID" ] || ROOT_UUID="1a2b3c4d-5e6f-4071-8293-a4b5c6d7e8f9"
+    if [ "$FS" = ext4 ]; then
+        run mkfs.ext4 -q -F -U "$ROOT_UUID" -L SINUX_ROOT "$P3"
+    else
+        run mkfs.ext2 -q -F -U "$ROOT_UUID" -L SINUX_ROOT "$P3"
+    fi
+    run mkfs.vfat -F32 -n SINUX_EFI "$P2"
+    [ "$DRY_RUN" = 1 ] && return 0
+    run mount -t "$FS" "$P3" "$TARGET"
+    mkdir -p "$TARGET/boot/efi" "$TARGET/boot/grub" || die "mkdir boot dirs failed"
+    run mount -t vfat "$P2" "$TARGET/boot/efi"
+    log "root UUID: $ROOT_UUID"
+}
+
+copy_system() {
+    step STEP_COPY
+    if [ "$DRY_RUN" = 0 ]; then
+        for d in boot/grub boot/efi etc bin sbin lib usr/share/doc/sinux \
+                 home root var tmp proc sys dev mnt/disk; do
+            mkdir -p "$TARGET/$d" || die "mkdir $TARGET/$d failed"
+        done
+        cp "$PAYLOAD/kernel.elf" "$TARGET/boot/kernel.elf" || die "kernel copy failed"
+        chmod 0644 "$TARGET/boot/kernel.elf"
+        cp "$PAYLOAD/hello.elf" "$TARGET/bin/hello" 2>/dev/null || true
+        chmod 0755 "$TARGET/bin/hello" 2>/dev/null || true
+        cp "$PAYLOAD/README.txt" "$TARGET/usr/share/doc/sinux/README.txt" 2>/dev/null || true
+        cp "$PAYLOAD/LICENSE"   "$TARGET/usr/share/doc/sinux/LICENSE"   2>/dev/null || true
+        printf '%s\n' "$HOSTNAME" > "$TARGET/etc/hostname"
+        cat > "$TARGET/etc/sinux-release" <<EOF
+NAME="Sinux"
+VERSION="0.5 (installer build $VERSION)"
+ID=sinux
+KERNEL="Sinux x86_64 Multiboot2 (from-scratch, terminal shell)"
+INSTALLED_BY="Sinux Installer $VERSION"
+INSTALL_DATE="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+BOOT_MODES="BIOS + UEFI"
+ROOT_FS="$FS"
+EOF
+        cat > "$TARGET/etc/issue" <<'EOF'
+############################################
+#                  Sinux                  #
+#    Made By SUN (Sinux Users Network)    #
+############################################
+
+EOF
+        cp "$TARGET/etc/issue" "$TARGET/etc/motd"
+        cat > "$TARGET/boot/grub/grub.cfg" <<EOF
+# Written by Sinux Installer $VERSION
+set default=0
+set timeout=5
+terminal_input console
+terminal_output console
+
+insmod part_gpt
+insmod ext2
+insmod multiboot2
+
+search --no-floppy --fs-uuid $ROOT_UUID --set=root
+
+menuentry "Sinux" {
+    multiboot2 /boot/kernel.elf
+    boot
+}
+
+menuentry "Sinux (boot immediately)" {
+    set timeout=0
+    multiboot2 /boot/kernel.elf
+    boot
+}
+EOF
+        mkdir -p "$TARGET/etc/sinux"
+        {
+            echo '{'
+            echo "  \"installer\": \"Sinux Installer $VERSION\","
+            echo "  \"disk\": \"$DISK\","
+            echo "  \"root_fs\": \"$FS\","
+            echo "  \"root_uuid\": \"$ROOT_UUID\","
+            echo "  \"firmware\": \"$(firmware)\","
+            echo "  \"hostname\": \"$HOSTNAME\","
+            echo "  \"language\": \"$LANG_CODE\","
+            echo "  \"date\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\""
+            echo '}'
+        } > "$TARGET/etc/sinux/install-info.json"
+        log "kernel: $(stat -c '%s bytes' "$TARGET/boot/kernel.elf" 2>/dev/null || echo '?')"
+    else
+        log "PLAN: copy /boot/kernel.elf, /bin/hello, /etc/*, grub.cfg"
+    fi
+}
+
+install_grub() {
+    step STEP_BIOS
+    if [ "$DRY_RUN" = 0 ]; then
+        grub-install --target=i386-pc \
+            --boot-directory="$TARGET/boot" \
+            --modules="biosdisk part_gpt ext2 multiboot2 normal configfile search" \
+            --no-floppy --skip-fs-probe --recheck --force "$DISK" >>"$LOG" 2>&1 \
+            || die "BIOS GRUB install failed (see $LOG)"
+    else
+        log "PLAN: grub-install --target=i386-pc ... $DISK"
+    fi
+
+    step STEP_UEFI
+    if [ "$DRY_RUN" = 0 ]; then
+        grub-install --target=x86_64-efi \
+            --efi-directory="$TARGET/boot/efi" \
+            --boot-directory="$TARGET/boot" \
+            --modules="part_gpt ext2 multiboot2 normal configfile search" \
+            --removable --no-nvram --skip-fs-probe "$DISK" >>"$LOG" 2>&1 \
+            || die "UEFI GRUB install failed (see $LOG)"
+    else
+        log "PLAN: grub-install --target=x86_64-efi --removable --no-nvram ..."
+    fi
+}
+
+# --------------------------------------------------------------------------
+# UEFI boot handover
+#
+# grub-install is called with --removable --no-nvram so the ESP also has the
+# portable \EFI\BOOT\BOOTX64.EFI.  Many real firmwares ignore that fallback
+# path on a FIXED disk and keep the USB stick first in BootOrder, so after a
+# reboot the installer came back instead of the installed Sinux terminal.
+# Create a real NVRAM entry for the disk and make it the one-shot BootNext,
+# and put it first in BootOrder (keeping every existing entry intact).
+# On BIOS, or when EFI variables are read-only, this is a no-op: the ISO's
+# GRUB config detects the installed disk and boots it directly instead.
+# --------------------------------------------------------------------------
+register_efi_boot() {
+    [ -d /sys/firmware/efi ] || { log "EFI: BIOS boot, no NVRAM entry needed"; return 0; }
+    command -v efibootmgr >/dev/null 2>&1 \
+        || { log "EFI: efibootmgr unavailable, relying on removable fallback"; return 0; }
+    mkdir -p /sys/firmware/efi/efivars 2>/dev/null || true
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+    [ -d /sys/firmware/efi/efivars ] \
+        || { log "EFI: efivarfs unavailable, relying on removable fallback"; return 0; }
+
+    local out id order x new
+    out="$(efibootmgr --create --disk "$DISK" --part 2 \
+            --label "Sinux" --loader '\EFI\BOOT\BOOTX64.EFI' 2>&1)" \
+        || { log "EFI: efibootmgr create failed: $out"; return 0; }
+    log "EFI: $out"
+    # Find the number of the entry we just created.
+    id="$(efibootmgr 2>/dev/null \
+          | sed -n 's/^Boot\([0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\)[* ]*Sinux.*/\1/p' \
+          | head -n 1)"
+    [ -n "$id" ] || { log "EFI: could not determine new boot entry number"; return 0; }
+    efibootmgr --bootnext "$id" >/dev/null 2>&1 || true
+    order="$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: *//p' | head -n 1)"
+    new="$id"
+    if [ -n "$order" ]; then
+        local IFS=','
+        for x in $order; do [ "$x" = "$id" ] || new="$new,$x"; done
+    fi
+    efibootmgr --bootorder "$new" >/dev/null 2>&1 || true
+    log "EFI: BootNext=Boot$id, BootOrder=$new (Sinux first)"
+}
+
+finish() {
+    step STEP_DONE
+    if [ "$DRY_RUN" = 0 ]; then
+        mkdir -p "$TARGET/etc/sinux" 2>/dev/null || true
+        cp "$LOG" "$TARGET/etc/sinux/install.log" 2>/dev/null || true
+        sync
+        umount "$TARGET/boot/efi" >>"$LOG" 2>&1 || true
+        umount "$TARGET"          >>"$LOG" 2>&1 || true
+        log "$(msg LOG_SAVED)"
+    fi
+}
+
+do_install() {
+    DRY_RUN="$1"
+    local args=() typed plan extra=""
+
+    if { [ "$MODE" = auto ] || [ "$MODE" = dryrun ]; } && [ -n "$AUTO_DEVICE" ]; then
+        DISK="$AUTO_DEVICE"
+    else
+        list_disks
+        [ "${#DISKS[@]}" -gt 0 ] || die "$(msg NO_DISK)"
+        args=()
+        for i in "${!DISKS[@]}"; do args+=("${DISKS[$i]}" "${DISK_LABELS[$i]}"); done
+        extra="$(msg MEDIA_NOTE)"
+        DISK="$(ui_menu "$(msg DISK_TITLE)" "$(msg DISK_TEXT)"$'\n\n'"$extra" "${args[@]}")" || return 1
+    fi
+
+    [ -n "$DISK" ] || die "$(msg NO_DEVICE)"
+    [ -b "$DISK" ] || die "$(msg BAD_DEVICE)"
+    P1="$(partn "$DISK" 1)"; P2="$(partn "$DISK" 2)"; P3="$(partn "$DISK" 3)"
+    log "target disk : $DISK"
+    log "partitions  : $P1 / $P2 / $P3"
+    log "firmware    : $(firmware)"
+
+    ui_msg "$(msg WARN_TITLE)" "$(msg WARN_TEXT)"
+
+    if [ "$AUTO_YES" != 1 ]; then
+        typed="$(ui_input "$(msg CONFIRM_TITLE)" "$(msg CONFIRM_TEXT)" "")" || return 1
+        if [ "$typed" != "${DISK##*/}" ]; then
+            ui_msg "$(msg ERR_TITLE)" "$(msg CONFIRM_BAD)"
+            return 1
+        fi
+        FS="$(ui_menu "$(msg FS_TITLE)" "$(msg FS_TEXT)" \
+              ext2 "$(msg FS_EXT2)" ext4 "$(msg FS_EXT4)")" || return 1
+        HOSTNAME="$(ui_input "$(msg HOST_TITLE)" "$(msg HOST_TEXT)" "$HOSTNAME")" || return 1
+    else
+        FS="$FS_CHOICE"
+    fi
+    [ "$FS" = ext2 ] || [ "$FS" = ext4 ] || FS=ext2
+    [ -n "$HOSTNAME" ] || HOSTNAME=sinux
+
+    printf -v plan 'Target disk : %s\nFirmware    : %s\nPartitions  : %s / %s / %s\nGPT layout  : 1 MiB BIOS boot + 128 MiB EFI FAT32 + root %s\nHostname    : %s\nMode        : %s\n' \
+        "$DISK" "$(firmware)" "$P1" "$P2" "$P3" "$FS" "$HOSTNAME" \
+        "$([ "$DRY_RUN" = 1 ] && echo DRY-RUN || echo INSTALL)"
+
+    if [ "$AUTO_YES" != 1 ]; then
+        if ! ui_yesno "$(msg PLAN_TITLE)" "$plan"$'\n\n'"$(msg PLAN_OK)"; then
+            ui_msg "$(msg ERR_TITLE)" "$(msg CANCELLED)"
+            return 1
+        fi
+    fi
+
+    partition_disk
+    format_partitions
+    copy_system
+    install_grub
+    register_efi_boot
+    finish
+
+    if [ "$DRY_RUN" = 1 ]; then
+        ui_msg "$(msg DRY_TITLE)" "$(msg DRY_TEXT)"$'\n\n'"$plan"
+        return 0
+    fi
+
+    ui_msg "$(msg DONE_TITLE)" "$(msg DONE_TEXT)"
+    log "INSTALL COMPLETE"
+    return 0
+}
+
+# --------------------------------------------------------------------------
+# Post-install handover (the reason the installer used to "come back")
+#
+# The interactive "install" action used to fall straight through to the main
+# menu after a successful install: no reboot at all.  And choosing "Reboot"
+# manually booted the USB stick again, because firmware keeps removable media
+# first in the boot order.  Now a successful interactive install asks the user
+# to pull the USB stick, presses ahead with a real reboot, and (on UEFI) sets
+# BootNext to the installed disk.  The ISO's own GRUB also auto-detects the
+# installed system, so leaving the stick in still lands in the Sinux shell.
+# --------------------------------------------------------------------------
+boot_handover() {
+    log "boot handover: install finished, preparing reboot"
+    [ "$REBOOT_AFTER" = 1 ] || {
+        log "sinux.reboot=0 -> staying in the installer menu (test mode)"
+        return 0
+    }
+    # A dialog msgbox waits for Enter: this is the moment to unplug the USB.
+    # The live system runs entirely from RAM, so removing it is safe.
+    ui_msg "$(msg REBOOT_TITLE)" "$(msg REBOOT_HINT)"
+    do_reboot
+    ui_msg "$(msg ERR_TITLE)" "$(msg REBOOT_FAILED)"
+    return 0
+}
+
+# --------------------------------------------------------------------------
+# main - this function NEVER returns
+# --------------------------------------------------------------------------
+main() {
+    case "$MODE" in
+        rescue)
+            ui_msg "$(msg SHELL_TITLE)" "$(msg SHELL_TEXT)"
+            exec /bin/bash --login
+            ;;
+        auto)
+            log "Sinux installer $VERSION - automated mode"
+            do_install 0 || true
+            if [ "$REBOOT_AFTER" = 0 ]; then
+                do_poweroff
+            else
+                do_reboot
+            fi
+            MODE=install   # if reboot failed, continue with the menu
+            ;;
+        dryrun)
+            log "Sinux installer $VERSION - dry run"
+            do_install 1 || true
+            log "DRY RUN COMPLETE"
+            MODE=install
+            ;;
+    esac
+
+    ui_msg "$(msg APP_TITLE)" "$(msg INTRO)"
+    while : ; do
+        local choice rc
+        choice="$(ui_menu "$(msg MAIN_TITLE)" "$(msg MAIN_TEXT)" \
+            install  "$(msg ACT_INSTALL)" \
+            dryrun   "$(msg ACT_DRYRUN)" \
+            lang     "$(msg ACT_LANG)" \
+            rescue   "$(msg ACT_RESCUE)" \
+            reboot   "$(msg ACT_REBOOT)" \
+            poweroff "$(msg ACT_POWEROFF)" \
+            about    "$(msg ACT_ABOUT)" \
+            exit     "$(msg ACT_EXIT)")"
+        rc=$?
+        if [ "$rc" -ne 0 ] || [ -z "$choice" ]; then
+            # Cancel / empty selection must NOT end the script.
+            log "menu: no selection, showing menu again"
+            sleep 1
+            continue
+        fi
+        case "$choice" in
+            install)
+                if do_install 0; then
+                    # Successful install: reboot into the installed Sinux
+                    # instead of falling through to the installer menu.
+                    boot_handover
+                fi
+                ;;
+            dryrun)   do_install 1 || true ;;
+            lang)
+                local l
+                l="$(ui_menu "$(msg LANG_TITLE)" "$(msg LANG_TEXT)" \
+                      en "$(msg LANG_EN)" fa "$(msg LANG_FA)")" || continue
+                set_language "$l"
+                ;;
+            rescue)
+                ui_msg "$(msg SHELL_TITLE)" "$(msg SHELL_TEXT)"
+                /bin/bash --login || true
+                ;;
+            reboot)   do_reboot ;;
+            poweroff) do_poweroff ;;
+            about)    ui_msg "$(msg ABOUT_TITLE)" "$(msg ABOUT_TEXT)" ;;
+            exit)
+                ui_msg "$(msg SHELL_TITLE)" "$(msg SHELL_TEXT)"
+                exec /bin/bash --login
+                ;;
+            *)        sleep 1 ;;
+        esac
+    done
+}
+
+main "$@"

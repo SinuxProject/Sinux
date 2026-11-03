@@ -1,7 +1,8 @@
 CC     := gcc
 AS     := nasm
+GCC_INC := $(shell $(CC) -print-file-name=include)
 CFLAGS := -m64 -ffreestanding -nostdlib -nostdinc \
-          -O2 -I../libc/include \
+          -O2 -I../libc/include -I$(GCC_INC) \
           -mno-red-zone -mno-sse -mno-sse2 \
           -fno-stack-protector
 LDFLAGS := -m elf_x86_64 -nostdlib -T linker.ld

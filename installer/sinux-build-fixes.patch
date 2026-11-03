@@ -1,0 +1,163 @@
+diff --git a/Makefile b/Makefile
+index b6ea6e5..7ec3a05 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,3 +1,4 @@
++.DEFAULT_GOAL := all
+ ARCH   := x86_64
+ BUILD  := build
+ TARGET := $(BUILD)/kernel.elf
+@@ -37,7 +38,8 @@ include kernel/proc/module.mk
+ include kernel/fs/module.mk
+ include kernel/syscall/module.mk
+ include kernel/test/module.mk
+-include kernel/scheduler/module.mk
++
++OBJS := $(sort $(OBJS))
+ 
+ .PHONY: all iso run run-uefi run-bios run-serial test clean deps userspace disk
+ 
+diff --git a/arch/x86_64/linker.ld b/arch/x86_64/linker.ld
+index b1f9b4d..509a10a 100644
+--- a/arch/x86_64/linker.ld
++++ b/arch/x86_64/linker.ld
+@@ -1,20 +1,20 @@
+ ENTRY(_start)
+ 
+ SECTIONS {
++    /* AP trampoline must be linked below 1 MiB so its 16-bit absolute
++       relocations fit. Multiboot2 loads this segment at 0x7000. */
++    . = 0x7000;
++    .trampoline : AT(0x7000) {
++        _trampoline_start = .;
++        *(.trampoline .trampoline.*)
++        _trampoline_end = .;
++    }
++
+     . = 1M;
+     .multiboot2 : { KEEP(*(.multiboot2)) }
+     .text   ALIGN(4K) : { *(.text .text.*) }
+     .rodata ALIGN(4K) : { *(.rodata .rodata.*) }
+     .data   ALIGN(4K) : { *(.data .data.*) }
+-    
+-    /* Trampoline section for AP startup - must be at physical address 0x7000 */
+-    .trampoline 0x7000 : AT(0x7000) {
+-        _trampoline_start = .;
+-        *(.trampoline .trampoline.*)
+-        _trampoline_end = .;
+-        ASSERT((_trampoline_end - _trampoline_start) <= 0x1000, "Trampoline too large")
+-    }
+-    
+     .bss    ALIGN(4K) : { *(COMMON) *(.bss .bss.*) }
+     _kernel_end = .;
+     /DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
+diff --git a/arch/x86_64/smp/cpu.c b/arch/x86_64/smp/cpu.c
+index 2a54bee..185f25a 100644
+--- a/arch/x86_64/smp/cpu.c
++++ b/arch/x86_64/smp/cpu.c
+@@ -1,12 +1,12 @@
+ #include "cpu.h"
+-#include "../../lib/io.h"
+-#include "../../lib/printk.h"
+-#include "../../lib/string.h"
++#include "../../../lib/io.h"
++#include "../../../lib/printk.h"
++#include "../../../lib/string.h"
+ #include "../gdt.h"
+ #include "../idt.h"
+ #include "../pic.h"
+-#include "../../mm/pmm.h"
+-#include "../../mm/vmm.h"
++#include "../../../mm/pmm.h"
++#include "../../../mm/vmm.h"
+ 
+ /* ── LAPIC/IOAPIC Register Definitions ───────────────────────────── */
+ #define LAPIC_BASE_MSR       0x1B
+@@ -342,6 +342,7 @@ void trampoline_start(void) {
+         "trampoline_gdt_desc:\n\t"
+         ".word trampoline_gdt_desc - trampoline_gdt - 1\n\t"
+         ".quad trampoline_gdt\n\t"
++        ".code64\n\t"
+     );
+ }
+ 
+diff --git a/arch/x86_64/smp/cpu.h b/arch/x86_64/smp/cpu.h
+index c1319d0..9d7e1a6 100644
+--- a/arch/x86_64/smp/cpu.h
++++ b/arch/x86_64/smp/cpu.h
+@@ -4,6 +4,11 @@
+ #include <stddef.h>
+ 
+ #define MAX_CPUS        8
++
++/* IPI vectors (shared with lock.c / scheduler) */
++#define IPI_VECTOR_RESCHED      0xFA
++#define IPI_VECTOR_TLB_FLUSH    0xFB
++#define IPI_VECTOR_SPURIOUS     0xFF
+ #define CPU_STATE_OFFLINE   0
+ #define CPU_STATE_RUNNING   1
+ #define CPU_STATE_HALTED    2
+diff --git a/arch/x86_64/smp/lock.c b/arch/x86_64/smp/lock.c
+index a1df24a..38456eb 100644
+--- a/arch/x86_64/smp/lock.c
++++ b/arch/x86_64/smp/lock.c
+@@ -1,7 +1,7 @@
+ #include "lock.h"
+ #include "cpu.h"
+-#include "../../lib/printk.h"
+-#include "../../lib/string.h"
++#include "../../../lib/printk.h"
++#include "../../../lib/string.h"
+ 
+ /* ── Spinlock Implementation ────────────────────────────────────── */
+ 
+diff --git a/kernel/core/main.c b/kernel/core/main.c
+index 4f0d7f8..abd99b2 100644
+--- a/kernel/core/main.c
++++ b/kernel/core/main.c
+@@ -315,12 +315,10 @@ kernel_main(uint32_t mb2_magic, uint64_t mb2_info)
+     tty_dev_init();
+     proc_init();
+     
+-    /* Initialize SMP subsystem (LAPIC/IOAPIC, bring up APs) */
+-    smp_init();
+-    smp_bringup_aps();
+-    
+-    /* Initialize preemptive scheduler with per-CPU runqueues */
+-    sched_preempt_init();
++    /* SMP bring-up is intentionally disabled in this installer build:
++     * upstream README lists "Single core only (no SMP)" as a known
++     * limitation and the AP trampoline is not relocatable yet. */
++    /* smp_init(); smp_bringup_aps(); sched_preempt_init(); */
+     
+     syscall_init();
+ 
+diff --git a/userspace/hello/Makefile b/userspace/hello/Makefile
+index 1c23f1e..77a6588 100644
+--- a/userspace/hello/Makefile
++++ b/userspace/hello/Makefile
+@@ -1,7 +1,8 @@
+ CC     := gcc
+ AS     := nasm
++GCC_INC := $(shell $(CC) -print-file-name=include)
+ CFLAGS := -m64 -ffreestanding -nostdlib -nostdinc \
+-          -O2 -I../libc/include \
++          -O2 -I../libc/include -I$(GCC_INC) \
+           -mno-red-zone -mno-sse -mno-sse2 \
+           -fno-stack-protector
+ LDFLAGS := -m elf_x86_64 -nostdlib -T linker.ld
+diff --git a/userspace/libc/Makefile b/userspace/libc/Makefile
+index 8366707..466277a 100644
+--- a/userspace/libc/Makefile
++++ b/userspace/libc/Makefile
+@@ -1,8 +1,9 @@
+ CC     := gcc
+ AS     := nasm
+ AR     := ar
++GCC_INC := $(shell $(CC) -print-file-name=include)
+ CFLAGS := -m64 -ffreestanding -nostdlib -nostdinc \
+-          -O2 -Wall -Iinclude \
++          -O2 -Wall -Iinclude -I$(GCC_INC) \
+           -mno-red-zone -mno-sse -mno-sse2 \
+           -fno-stack-protector
+ ASFLAGS := -f elf64
