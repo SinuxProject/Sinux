@@ -1,12 +1,12 @@
 #include "cpu.h"
-#include "../../lib/io.h"
-#include "../../lib/printk.h"
-#include "../../lib/string.h"
+#include "../../../lib/io.h"
+#include "../../../lib/printk.h"
+#include "../../../lib/string.h"
 #include "../gdt.h"
 #include "../idt.h"
 #include "../pic.h"
-#include "../../mm/pmm.h"
-#include "../../mm/vmm.h"
+#include "../../../mm/pmm.h"
+#include "../../../mm/vmm.h"
 
 /* ── LAPIC/IOAPIC Register Definitions ───────────────────────────── */
 #define LAPIC_BASE_MSR       0x1B
@@ -342,6 +342,7 @@ void trampoline_start(void) {
         "trampoline_gdt_desc:\n\t"
         ".word trampoline_gdt_desc - trampoline_gdt - 1\n\t"
         ".quad trampoline_gdt\n\t"
+        ".code64\n\t"
     );
 }
 

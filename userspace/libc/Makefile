@@ -1,8 +1,9 @@
 CC     := gcc
 AS     := nasm
 AR     := ar
+GCC_INC := $(shell $(CC) -print-file-name=include)
 CFLAGS := -m64 -ffreestanding -nostdlib -nostdinc \
-          -O2 -Wall -Iinclude \
+          -O2 -Wall -Iinclude -I$(GCC_INC) \
           -mno-red-zone -mno-sse -mno-sse2 \
           -fno-stack-protector
 ASFLAGS := -f elf64

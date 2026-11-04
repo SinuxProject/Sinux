@@ -1,3 +1,4 @@
+.DEFAULT_GOAL := all
 ARCH   := x86_64
 BUILD  := build
 TARGET := $(BUILD)/kernel.elf
@@ -37,7 +38,8 @@ include kernel/proc/module.mk
 include kernel/fs/module.mk
 include kernel/syscall/module.mk
 include kernel/test/module.mk
-include kernel/scheduler/module.mk
+
+OBJS := $(sort $(OBJS))
 
 .PHONY: all iso run run-uefi run-bios run-serial test clean deps userspace disk
 

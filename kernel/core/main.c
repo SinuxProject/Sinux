@@ -315,12 +315,10 @@ kernel_main(uint32_t mb2_magic, uint64_t mb2_info)
     tty_dev_init();
     proc_init();
     
-    /* Initialize SMP subsystem (LAPIC/IOAPIC, bring up APs) */
-    smp_init();
-    smp_bringup_aps();
-    
-    /* Initialize preemptive scheduler with per-CPU runqueues */
-    sched_preempt_init();
+    /* SMP bring-up is intentionally disabled in this installer build:
+     * upstream README lists "Single core only (no SMP)" as a known
+     * limitation and the AP trampoline is not relocatable yet. */
+    /* smp_init(); smp_bringup_aps(); sched_preempt_init(); */
     
     syscall_init();
 

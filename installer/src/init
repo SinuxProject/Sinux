@@ -1,0 +1,152 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# Sinux Installer 1.1.0 - /init (PID 1 supervisor)
+#
+# The whole live OS lives in RAM.  This file is PID 1; it must NEVER exit.
+# ---------------------------------------------------------------------------
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mount -t proc     proc     /proc 2>/dev/null || true
+mount -t sysfs    sysfs    /sys 2>/dev/null || true
+mount -t devpts   devpts   /dev/pts 2>/dev/null || true
+mkdir -p /run /tmp /var/log /mnt/target /sinux
+
+# devtmpfs does NOT create /dev/fd.  Bash process substitution (< <(cmd))
+# needs /dev/fd/N; without it every such call fails with "No such file or
+# directory" and the installer dies.  Create the standard /proc/self/fd
+# symlinks as udev would on a normal system.
+[ -L /dev/fd ] || [ -e /dev/fd ] || ln -s /proc/self/fd /dev/fd 2>/dev/null || true
+[ -L /dev/stdin ]  || ln -s /proc/self/fd/0 /dev/stdin  2>/dev/null || true
+[ -L /dev/stdout ] || ln -s /proc/self/fd/1 /dev/stdout 2>/dev/null || true
+[ -L /dev/stderr ] || ln -s /proc/self/fd/2 /dev/stderr 2>/dev/null || true
+
+# Placeholder; the real console device is chosen below from
+# /sys/class/tty/console/active after /sys is mounted.
+CONSOLE_DEV=/dev/console
+say() { printf '%s\n' "$*" > "$CONSOLE_DEV" 2>/dev/null || true; }
+
+# ---- kernel command line -------------------------------------------------
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in
+        sinux.lang=*)       export SINUX_LANG="${arg#*=}" ;;
+        sinux.mode=*)       export SINUX_MODE="${arg#*=}" ;;
+        sinux.device=*)     export SINUX_DEVICE="${arg#*=}" ;;
+        sinux.fs=*)         export SINUX_FS="${arg#*=}" ;;
+        sinux.yes=*)        export SINUX_YES="${arg#*=}" ;;
+        sinux.reboot=*)     export SINUX_REBOOT="${arg#*=}" ;;
+        sinux.hostname=*)   export SINUX_HOSTNAME="${arg#*=}" ;;
+        sinux.debug=*)      export SINUX_DEBUG="${arg#*=}" ;;
+        sinux.term=*)       export SINUX_TERM="${arg#*=}" ;;
+        sinux.nodialog=*)   export SINUX_NODIALOG="${arg#*=}" ;;
+        sinux.fa_console=*) export SINUX_FA_CONSOLE="${arg#*=}" ;;
+    esac
+done
+: "${SINUX_LANG:=en}";          export SINUX_LANG
+: "${SINUX_MODE:=install}";     export SINUX_MODE
+: "${SINUX_DEBUG:=0}";          export SINUX_DEBUG
+: "${SINUX_NODIALOG:=0}";       export SINUX_NODIALOG
+: "${SINUX_FA_CONSOLE:=auto}";  export SINUX_FA_CONSOLE
+
+# ---- pick the console the USER is actually looking at --------------------
+# /sys/class/tty/console/active lists the registered consoles; the last one
+# is the device behind /dev/console.  On a normal PC that is tty0 (VGA/EFI
+# framebuffer).  We must write the installer UI there explicitly: writing to
+# /dev/console on a machine booted with console=ttyS0 sends everything to a
+# COM port nobody sees, which looks exactly like a frozen blinking cursor.
+ACTIVE=$(cat /sys/class/tty/console/active 2>/dev/null || echo tty0)
+LAST=${ACTIVE##* }
+case "$LAST" in
+    ttyS*|hvc*|ttyAMA*|ttyUSB*)
+        export SINUX_SERIAL=1
+        CONSOLE_DEV=/dev/console
+        ;;
+    *)
+        export SINUX_SERIAL=0
+        CONSOLE_DEV=/dev/tty0
+        [ -e "$CONSOLE_DEV" ] || CONSOLE_DEV=/dev/console
+        ;;
+esac
+[ -e "$CONSOLE_DEV" ] || CONSOLE_DEV=/dev/console
+export SINUX_CONSOLE="$CONSOLE_DEV"
+export TERM="${SINUX_TERM:-linux}"
+if [ "$SINUX_SERIAL" = 1 ] && [ -z "${SINUX_TERM:-}" ]; then
+    export TERM=vt100
+fi
+
+# ---- Farsi on the VGA text console --------------------------------------
+if [ "$SINUX_LANG" = fa ] && [ "$SINUX_SERIAL" = 0 ] && [ -e /dev/tty0 ]; then
+    setfont /usr/share/consolefonts/Arabic-VGA16.psf >/dev/null 2>&1 || true
+    export NCURSES_NO_UTF8_ACS=1
+fi
+
+# ---- storage / input / filesystem drivers -------------------------------
+# kernel request_module() defaults to /sbin/modprobe; point it at our kmod.
+printf '%s\n' /usr/bin/modprobe > /proc/sys/kernel/modprobe 2>/dev/null || true
+
+# crc32c-intel.ko.xz is deliberately NOT loaded: on this Debian kernel it
+# makes the kernel print "Invalid ELF header magic" during boot.  The
+# generic CRC32C implementation provides the same functionality.
+MODULES="crc32c_generic libcrc32c xxhash_generic
+ scsi_mod libata ata_piix ahci libahci sd_mod sr_mod cdrom
+ nvme nvme_core virtio virtio_ring virtio_pci virtio_blk virtio_scsi
+ usbcore xhci_hcd ehci_hcd uhci_hcd ohci_hcd usb_storage uas
+ hid hid_generic usbhid ext2 ext4 mbcache jbd2 fat vfat msdos
+ nls_ascii nls_cp437 nls_iso8859_1 nls_utf8 isofs loop"
+
+for m in $MODULES; do
+    [ "$SINUX_DEBUG" = 1 ] && say "[modprobe] $m"
+    modprobe "$m" >/dev/null 2>&1 || true
+done
+sleep 1
+
+say ""
+say "  Sinux Installer 1.1.0  -  minimal Linux live environment"
+say "  Console: $CONSOLE_DEV (serial=$SINUX_SERIAL, term=$TERM)"
+say "  PID 1 supervisor active (init will never exit)"
+say ""
+
+# ---------------------------------------------------------------------------
+# PID 1 SUPERVISOR  --  the fix for the reported crash.
+#
+# A Linux kernel panics with "Attempted to kill init! exitcode=0x00000000"
+# the instant PID 1 calls exit_group(), and a panic freezes the entire
+# machine.  The old /init did `exec /usr/local/sbin/sinux-install`, so any
+# early return from the installer (Cancel in dialog, dry-run end, rescue
+# shell "exit", a failed command) killed init.
+#
+# Run the installer as a CHILD instead and always fall back to a shell.
+# ---------------------------------------------------------------------------
+restarts=0
+while : ; do
+    # Explicitly attach the installer's stdin/stdout/stderr to the console
+    # the user is looking at.  PID 1 inherits /dev/console, which (depending
+    # on the kernel command line) may be a serial port with no terminal on
+    # the other end -- that produces a blank screen with a blinking cursor.
+    /usr/local/sbin/sinux-install \
+        < "$CONSOLE_DEV" > "$CONSOLE_DEV" 2>&1
+    rc=$?
+    restarts=$((restarts + 1))
+    say ""
+    say "[init] installer exited with status $rc."
+    say "[init] starting a rescue shell (type 'exit' to restart installer)."
+    sync
+    if [ "$restarts" -ge 3 ]; then
+        say "[init] too many restarts - idling so the kernel stays alive."
+        say "[init] use Ctrl+Alt+Del or the power button to leave."
+        while : ; do sleep 30; done
+    fi
+    # cttyhack gives bash a real controlling tty; without it bash prints
+    # "cannot set terminal process group" / "no job control" on every start.
+    if [ -x /bin/bash ]; then
+        if ! /bin/busybox cttyhack /bin/bash --login \
+                < "$CONSOLE_DEV" > "$CONSOLE_DEV" 2>&1; then
+            :   # shell exited normally (user typed exit or EOF)
+        fi
+    else
+        /bin/sh < "$CONSOLE_DEV" > "$CONSOLE_DEV" 2>&1 || true
+    fi
+    sleep 2
+done

@@ -1,7 +1,7 @@
 #include "lock.h"
 #include "cpu.h"
-#include "../../lib/printk.h"
-#include "../../lib/string.h"
+#include "../../../lib/printk.h"
+#include "../../../lib/string.h"
 
 /* ── Spinlock Implementation ────────────────────────────────────── */
 

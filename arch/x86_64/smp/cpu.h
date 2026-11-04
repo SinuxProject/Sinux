@@ -4,6 +4,11 @@
 #include <stddef.h>
 
 #define MAX_CPUS        8
+
+/* IPI vectors (shared with lock.c / scheduler) */
+#define IPI_VECTOR_RESCHED      0xFA
+#define IPI_VECTOR_TLB_FLUSH    0xFB
+#define IPI_VECTOR_SPURIOUS     0xFF
 #define CPU_STATE_OFFLINE   0
 #define CPU_STATE_RUNNING   1
 #define CPU_STATE_HALTED    2
