@@ -22,6 +22,7 @@ fb_tag_start:
     dd 1024                           ; width
     dd 768                            ; height
     dd 32                             ; depth
+    dd 0                              ; pad to 8-byte multiple (GRUB advances tags by round8(size))
 fb_tag_end:
 
     ; ── End tag ───────────────────────────────────────────
