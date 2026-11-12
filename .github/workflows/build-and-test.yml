@@ -45,3 +45,10 @@ jobs:
         with:
           name: serial-log
           path: serial.log
+
+      - name: Upload QEMU debug log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-debug-log
+          path: qemu_debug.log
