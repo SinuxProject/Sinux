@@ -56,6 +56,15 @@ pmm_init(uint32_t magic, uint64_t info_addr)
     uint8_t   *ptr = (uint8_t *)hdr + 8;
     uint8_t   *end = (uint8_t *)hdr + hdr->total;
 
+    /* The bootloader leaves the multiboot2 boot information structure at
+     * info_addr; later stages of pmm_init (and kernel/core/multiboot.c) still
+     * read it after the bitmap is initialized, so its pages must never be
+     * claimed by the bitmap or handed out as free memory. */
+    uint64_t info_start = (uint64_t)info_addr & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t info_end =
+        ((uint64_t)info_addr + hdr->total + PAGE_SIZE - 1) &
+        ~(uint64_t)(PAGE_SIZE - 1);
+
     uint64_t max_addr = 0;
     while (ptr + sizeof(mb2_tag_t) <= end) {
         mb2_tag_t *tag = (mb2_tag_t *)ptr;
@@ -100,12 +109,18 @@ pmm_init(uint32_t magic, uint64_t info_addr)
                 mb2_mmap_entry_t *e = (mb2_mmap_entry_t *)ep;
                 if (e->type == 1) {
                     /* place the bitmap above the kernel image,
-                     * inside a region with enough room */
+                     * inside a region with enough room, and never
+                     * overlapping the multiboot boot information: the
+                     * kmemset below would otherwise wipe the tag list
+                     * while later loops still parse it */
                     uint64_t place =
                         e->base < kernel_end ? kernel_end : e->base;
                     place = (place + PAGE_SIZE - 1) &
                             ~(uint64_t)(PAGE_SIZE - 1);
-                    if (place + bitmap_size <= e->base + e->len) {
+                    bool overlaps_info =
+                        place < info_end && place + bitmap_size > info_start;
+                    if (!overlaps_info &&
+                        place + bitmap_size <= e->base + e->len) {
                         bitmap = (uint8_t *)(uintptr_t)place;
                         placed = true;
                     }
@@ -152,6 +167,8 @@ pmm_init(uint32_t magic, uint64_t info_addr)
         ~(uint64_t)(PAGE_SIZE - 1);
     if (bitmap_end > reserve_end)
         reserve_end = bitmap_end;
+    if (info_end > reserve_end)
+        reserve_end = info_end;
 
     for (uint64_t a = 0; a < reserve_end; a += PAGE_SIZE) {
         size_t idx = (size_t)(a / PAGE_SIZE);
