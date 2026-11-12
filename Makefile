@@ -17,6 +17,7 @@ endif
 
 CFLAGS := $(CFLAGS_ARCH)        \
     -ffreestanding -O2           \
+    -march=x86-64                \
     -Wall -Wextra                \
     -mno-red-zone                \
     -mno-mmx -mno-sse -mno-sse2  \

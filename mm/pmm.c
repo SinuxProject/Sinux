@@ -1,12 +1,12 @@
-
 #include "pmm.h"
 #include "../lib/string.h"
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MB2_MAGIC_VAL  0x36D76289u
-#define TAG_END        0u
-#define TAG_MMAP       6u
+#define MB2_MAGIC_VAL    0x36D76289u
+#define TAG_END          0u
+#define TAG_MMAP         6u
+#define TAG_FRAMEBUFFER  8u
 
 typedef struct __attribute__((packed)) { uint32_t total, reserved; } mb2_hdr_t;
 typedef struct __attribute__((packed)) { uint32_t type, size;      } mb2_tag_t;
@@ -17,6 +17,16 @@ typedef struct __attribute__((packed)) {
     uint64_t base, len;
     uint32_t type, _res;
 } mb2_mmap_entry_t;
+typedef struct __attribute__((packed)) {
+    uint32_t type, size;
+    uint64_t fb_addr;
+    uint32_t fb_pitch;
+    uint32_t fb_width;
+    uint32_t fb_height;
+    uint8_t  fb_bpp;
+    uint8_t  fb_type;
+    uint16_t reserved;
+} mb2_fb_tag_t;
 
 #define BITMAP_MAX_PAGES (16 * 1024 * 1024)
 
@@ -30,6 +40,9 @@ static size_t    total_pages = 0;
 static size_t    free_pages  = 0;
 static size_t    bitmap_size = 0;   
 
+static uint64_t   fb_addr = 0;
+static uint64_t   fb_len  = 0;
+
 static void   bm_set  (size_t idx) { bitmap[idx/8] |=  (uint8_t)(1u << (idx%8)); }
 static void   bm_clear(size_t idx) { bitmap[idx/8] &= (uint8_t)~(1u << (idx%8)); }
 static bool   bm_test (size_t idx) { return (bitmap[idx/8] >> (idx%8)) & 1u; }
@@ -42,6 +55,15 @@ pmm_init(uint32_t magic, uint64_t info_addr)
     mb2_hdr_t *hdr = (mb2_hdr_t *)(uintptr_t)info_addr;
     uint8_t   *ptr = (uint8_t *)hdr + 8;
     uint8_t   *end = (uint8_t *)hdr + hdr->total;
+
+    /* The bootloader leaves the multiboot2 boot information structure at
+     * info_addr; later stages of pmm_init (and kernel/core/multiboot.c) still
+     * read it after the bitmap is initialized, so its pages must never be
+     * claimed by the bitmap or handed out as free memory. */
+    uint64_t info_start = (uint64_t)info_addr & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t info_end =
+        ((uint64_t)info_addr + hdr->total + PAGE_SIZE - 1) &
+        ~(uint64_t)(PAGE_SIZE - 1);
 
     uint64_t max_addr = 0;
     while (ptr + sizeof(mb2_tag_t) <= end) {
@@ -57,6 +79,12 @@ pmm_init(uint32_t magic, uint64_t info_addr)
                 if (e->type == 1 && top > max_addr) max_addr = top;
                 ep += mt->entry_size;
             }
+        } else if (tag->type == TAG_FRAMEBUFFER) {
+            mb2_fb_tag_t *fb = (mb2_fb_tag_t *)ptr;
+            fb_addr = fb->fb_addr;
+            fb_len  = (uint64_t)fb->fb_pitch * fb->fb_height;
+            uint64_t fb_top = fb_addr + fb_len;
+            if (fb_top > max_addr) max_addr = fb_top;
         }
         ptr += (tag->size + 7) & ~7u;
     }
@@ -81,12 +109,18 @@ pmm_init(uint32_t magic, uint64_t info_addr)
                 mb2_mmap_entry_t *e = (mb2_mmap_entry_t *)ep;
                 if (e->type == 1) {
                     /* place the bitmap above the kernel image,
-                     * inside a region with enough room */
+                     * inside a region with enough room, and never
+                     * overlapping the multiboot boot information: the
+                     * kmemset below would otherwise wipe the tag list
+                     * while later loops still parse it */
                     uint64_t place =
                         e->base < kernel_end ? kernel_end : e->base;
                     place = (place + PAGE_SIZE - 1) &
                             ~(uint64_t)(PAGE_SIZE - 1);
-                    if (place + bitmap_size <= e->base + e->len) {
+                    bool overlaps_info =
+                        place < info_end && place + bitmap_size > info_start;
+                    if (!overlaps_info &&
+                        place + bitmap_size <= e->base + e->len) {
                         bitmap = (uint8_t *)(uintptr_t)place;
                         placed = true;
                     }
@@ -133,12 +167,26 @@ pmm_init(uint32_t magic, uint64_t info_addr)
         ~(uint64_t)(PAGE_SIZE - 1);
     if (bitmap_end > reserve_end)
         reserve_end = bitmap_end;
+    if (info_end > reserve_end)
+        reserve_end = info_end;
 
     for (uint64_t a = 0; a < reserve_end; a += PAGE_SIZE) {
         size_t idx = (size_t)(a / PAGE_SIZE);
         if (idx < total_pages && !bm_test(idx)) {
             bm_set(idx);
             free_pages--;
+        }
+    }
+
+    if (fb_addr != 0 && fb_len != 0) {
+        uint64_t start = fb_addr & ~(uint64_t)(PAGE_SIZE - 1);
+        uint64_t stop  = (fb_addr + fb_len + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+        for (uint64_t a = start; a < stop; a += PAGE_SIZE) {
+            size_t idx = (size_t)(a / PAGE_SIZE);
+            if (idx < total_pages && !bm_test(idx)) {
+                bm_set(idx);
+                free_pages--;
+            }
         }
     }
 }
