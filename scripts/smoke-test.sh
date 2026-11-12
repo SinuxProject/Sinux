@@ -24,7 +24,6 @@ timeout --signal=TERM --kill-after=10s "$TIMEOUT_S" \
     -cdrom "$ISO" -m 256M -device bochs-display \
     -drive "file=${DISK},format=raw,if=ide,index=0,media=disk" \
     -nographic -serial mon:stdio -no-reboot \
-    -d int,cpu_reset -D qemu_debug.log \
     > "$LOG" 2>&1 || code=$?
 code=${code:-0}
 echo "[..] qemu exit code: $code (124/137 = expected timeout; kernel runs forever)"
